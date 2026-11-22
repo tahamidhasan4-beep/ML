@@ -1,279 +1,504 @@
-"""
-House Price Prediction with TensorFlow/Keras
-============================================
-Dataset: Kaggle House Prices - Advanced Regression Techniques
-Task: Regression (predict SalePrice)
 
-Pipeline:
- 1. Data inspection
- 2. Remove unwanted variables
- 3. Handle null / inappropriate values
- 4. Feature generation & transformation
- 5. Outlier treatment
- 6. Scaling of features
- 7. Build & train TensorFlow regression models
- 8. Evaluate & compare
-"""
+# ============================================================
+# HOUSE PRICE PREDICTION USING MACHINE LEARNING
+# ============================================================
+
+# STEP 0: IMPORT LIBRARIES
+
+import warnings
+warnings.filterwarnings("ignore")
 
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-import tensorflow as tf
-from tensorflow import keras
-from tensorflow.keras import layers
-from sklearn.model_selection import train_test_split, KFold
-from sklearn.preprocessing import StandardScaler, OneHotEncoder
-from sklearn.impute import SimpleImputer
-from sklearn.compose import ColumnTransformer
+import seaborn as sns
+
+from sklearn.model_selection import train_test_split
+from sklearn.compose import ColumnTransformer, TransformedTargetRegressor
 from sklearn.pipeline import Pipeline
-from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
-import warnings
-warnings.filterwarnings("ignore")
+from sklearn.impute import SimpleImputer
+from sklearn.preprocessing import StandardScaler, OneHotEncoder
 
-# ---------------------------------------------------------------------
-# 1. DATA INSPECTION
-# ---------------------------------------------------------------------
-train = pd.read_csv("train.csv")
-test  = pd.read_csv("test.csv")
+from sklearn.linear_model import LinearRegression
+from sklearn.tree import DecisionTreeRegressor
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.ensemble import GradientBoostingRegressor
+from sklearn.svm import SVR
 
-print("Train shape:", train.shape)
-print("Test  shape:", test.shape)
-print("\nTarget summary:\n", train["SalePrice"].describe())
-
-# ---------------------------------------------------------------------
-# 2. REMOVE UNWANTED VARIABLES
-# ---------------------------------------------------------------------
-# 'Id' is not predictive; keep 'Id' separately for submission
-train_ids = train["Id"].copy()
-test_ids  = test["Id"].copy()
-
-train = train.drop(columns=["Id"])
-test  = test.drop(columns=["Id"])
-
-y = train["SalePrice"].copy()
-X = train.drop(columns=["SalePrice"])
-
-# ---------------------------------------------------------------------
-# 3. FEATURE ENGINEERING & TRANSFORMATION (1.4)
-# ---------------------------------------------------------------------
-def engineer_features(df):
-    df = df.copy()
-
-    # Total living area
-    df["TotalSF"] = (
-        df["TotalBsmtSF"].fillna(0)
-        + df["1stFlrSF"].fillna(0)
-        + df["2ndFlrSF"].fillna(0)
-    )
-
-    # Total bathrooms
-    df["TotalBath"] = (
-        df["FullBath"].fillna(0)
-        + 0.5 * df["HalfBath"].fillna(0)
-        + df["BsmtFullBath"].fillna(0)
-        + 0.5 * df["BsmtHalfBath"].fillna(0)
-    )
-
-    # Total porch area
-    df["TotalPorch"] = (
-        df["OpenPorchSF"].fillna(0)
-        + df["EnclosedPorch"].fillna(0)
-        + df["3SsnPorch"].fillna(0)
-        + df["ScreenPorch"].fillna(0)
-    )
-
-    # Property age
-    df["Age"] = df["YrSold"] - df["YearBuilt"]
-    df["RemodAge"] = df["YrSold"] - df["YearRemodAdd"]
-    df["GarageAge"] = df["YrSold"] - df["GarageYrBlt"]
-    df["GarageAge"] = df["GarageAge"].where(df["GarageAge"] >= 0, np.nan)
-
-    # Total rooms
-    df["TotalRooms"] = (
-        df["TotRmsAbvGrd"].fillna(0) + df["BedroomAbvGr"].fillna(0)
-    )
-
-    return df
-
-X    = engineer_features(X)
-test = engineer_features(test)
-
-# ---------------------------------------------------------------------
-# 4. NULL / INAPPROPRIATE VALUES + OUTLIER TREATMENT (1.3, 1.5)
-# ---------------------------------------------------------------------
-# Separate numeric and categorical columns
-num_cols = X.select_dtypes(include=[np.number]).columns.tolist()
-cat_cols = X.select_dtypes(exclude=[np.number]).columns.tolist()
-
-# Remove extreme target outliers (Grubbs-style rule / IQR)
-q1, q3 = y.quantile([0.25, 0.75])
-iqr = q3 - q1
-mask = (y >= q1 - 1.5 * iqr) & (y <= q3 + 1.5 * iqr)
-print(f"Removing {len(y) - mask.sum()} SalePrice outliers")
-X, y = X.loc[mask], y.loc[mask]
-
-# Log-transform target (helps regression stability)
-y_log = np.log1p(y)
-
-# ---------------------------------------------------------------------
-# 5. PREPROCESSING PIPELINE (impute + encode + scale) - 3.1
-# ---------------------------------------------------------------------
-numeric_transformer = Pipeline(steps=[
-    ("imputer", SimpleImputer(strategy="median")),
-    ("scaler", StandardScaler()),
-])
-
-categorical_transformer = Pipeline(steps=[
-    ("imputer", SimpleImputer(strategy="constant", fill_value="None")),
-    ("onehot", OneHotEncoder(handle_unknown="ignore", sparse_output=False)),
-])
-
-preprocessor = ColumnTransformer(transformers=[
-    ("num", numeric_transformer, num_cols),
-    ("cat", categorical_transformer, cat_cols),
-])
-
-# Fit on train, transform both train & test
-X_prep    = preprocessor.fit_transform(X)
-test_prep = preprocessor.transform(test)
-
-print("Processed feature matrix:", X_prep.shape)
-
-# ---------------------------------------------------------------------
-# 6. TRAIN / VALIDATION SPLIT
-# ---------------------------------------------------------------------
-X_tr, X_val, y_tr, y_val = train_test_split(
-    X_prep, y_log.values, test_size=0.2, random_state=42
+from sklearn.metrics import (
+    mean_absolute_error,
+    mean_squared_error,
+    r2_score
 )
 
-# ---------------------------------------------------------------------
-# 7. TENSORFLOW MODELS
-# ---------------------------------------------------------------------
-def build_dnn_model(input_dim):
-    """Deep Neural Network for regression."""
-    model = keras.Sequential([
-        layers.Input(shape=(input_dim,)),
-        layers.Dense(256, activation="relu"),
-        layers.BatchNormalization(),
-        layers.Dropout(0.3),
-        layers.Dense(128, activation="relu"),
-        layers.BatchNormalization(),
-        layers.Dropout(0.3),
-        layers.Dense(64, activation="relu"),
-        layers.Dense(1),  # linear output for regression
-    ])
-    model.compile(
-        optimizer=keras.optimizers.Adam(learning_rate=1e-3),
-        loss="mse",
-        metrics=["mae"],
-    )
-    return model
 
-def build_mlp_model(input_dim):
-    """Light MLP (LightGBM-style shallow alternative)."""
-    model = keras.Sequential([
-        layers.Input(shape=(input_dim,)),
-        layers.Dense(128, activation="relu"),
-        layers.Dropout(0.2),
-        layers.Dense(64, activation="relu"),
-        layers.Dropout(0.2),
-        layers.Dense(1),
-    ])
-    model.compile(
-        optimizer=keras.optimizers.Adam(learning_rate=1e-3),
-        loss="mse",
-        metrics=["mae"],
-    )
-    return model
+# ============================================================
+# STEP 1: DATA INSPECTION
+# ============================================================
 
-# ---------------------------------------------------------------------
-# 8. TRAIN DNN
-# ---------------------------------------------------------------------
-callbacks = [
-    keras.callbacks.EarlyStopping(
-        monitor="val_loss", patience=20, restore_best_weights=True
-    ),
-    keras.callbacks.ReduceLROnPlateau(
-        monitor="val_loss", factor=0.5, patience=10, min_lr=1e-6
-    ),
+# Load house price dataset
+df = pd.read_csv("train.csv")
+
+print("\n========== DATA INSPECTION ==========")
+
+# First five rows
+print("\nFirst 5 rows:")
+print(df.head())
+
+# Dataset shape
+print("\nDataset shape:")
+print(df.shape)
+
+# Dataset information
+print("\nDataset information:")
+df.info()
+
+# Statistical summary
+print("\nStatistical description:")
+print(df.describe())
+
+# Missing values
+print("\nMissing values:")
+print(df.isnull().sum().sort_values(ascending=False).head(20))
+
+# Duplicate records
+print("\nDuplicate rows:", df.duplicated().sum())
+
+# Target distribution
+plt.figure(figsize=(8, 5))
+sns.histplot(df["SalePrice"], kde=True)
+plt.title("House Price Distribution")
+plt.xlabel("Sale Price")
+plt.show()
+
+
+# ============================================================
+# STEP 2: REMOVE UNWANTED VARIABLES
+# ============================================================
+
+print("\n========== REMOVE UNWANTED VARIABLES ==========")
+
+# Remove duplicate rows
+df = df.drop_duplicates()
+
+# Separate target variable
+y = df["SalePrice"]
+
+# Remove target from input features
+X = df.drop(columns=["SalePrice"])
+
+# Remove ID column
+X = X.drop(columns=["Id"], errors="ignore")
+
+print("\nFeatures after removing ID:")
+print(X.shape)
+
+
+# ============================================================
+# STEP 3: HANDLE NULL / INAPPROPRIATE VALUES
+# ============================================================
+
+print("\n========== HANDLE MISSING VALUES ==========")
+
+# Replace infinite values
+X = X.replace([np.inf, -np.inf], np.nan)
+
+# Some categorical columns contain missing values
+# because a house may not have that facility.
+# We will handle them using imputation later.
+
+# Remove columns having more than 80% missing values.
+missing_percentage = X.isnull().mean()
+
+unwanted_columns = missing_percentage[
+    missing_percentage > 0.80
+].index.tolist()
+
+X = X.drop(columns=unwanted_columns)
+
+print("\nRemoved columns:")
+print(unwanted_columns)
+
+print("\nRemaining features:", X.shape[1])
+
+
+# ============================================================
+# STEP 4: FEATURE GENERATION & TRANSFORMATION
+# ============================================================
+
+print("\n========== FEATURE ENGINEERING ==========")
+
+# Total house area
+X["TotalSF"] = (
+    X["TotalBsmtSF"].fillna(0) +
+    X["1stFlrSF"].fillna(0) +
+    X["2ndFlrSF"].fillna(0)
+)
+
+# Total bathrooms
+X["TotalBath"] = (
+    X["FullBath"].fillna(0) +
+    0.5 * X["HalfBath"].fillna(0) +
+    X["BsmtFullBath"].fillna(0) +
+    0.5 * X["BsmtHalfBath"].fillna(0)
+)
+
+# Age of house at the time of sale
+X["HouseAge"] = (
+    X["YrSold"] - X["YearBuilt"]
+).clip(lower=0)
+
+# Years since last remodeling
+X["RemodAge"] = (
+    X["YrSold"] - X["YearRemodAdd"]
+).clip(lower=0)
+
+# Total porch area
+porch_columns = [
+    "OpenPorchSF",
+    "EnclosedPorch",
+    "3SsnPorch",
+    "ScreenPorch",
+    "WoodDeckSF"
 ]
 
-dnn = build_dnn_model(X_tr.shape[1])
-history = dnn.fit(
-    X_tr, y_tr,
-    validation_data=(X_val, y_val),
-    epochs=300,
-    batch_size=64,
-    callbacks=callbacks,
-    verbose=1,
+X["TotalPorchSF"] = X[porch_columns].fillna(0).sum(axis=1)
+
+# Binary features
+X["HasGarage"] = (X["GarageArea"].fillna(0) > 0).astype(int)
+
+X["HasBasement"] = (X["TotalBsmtSF"].fillna(0) > 0).astype(int)
+
+X["HasPool"] = (X["PoolArea"].fillna(0) > 0).astype(int)
+
+# Log transformation of skewed numerical features
+for col in ["LotArea", "TotalSF", "GrLivArea"]:
+    if col in X.columns:
+        X[col] = np.log1p(X[col].clip(lower=0))
+
+print("\nNew features created:")
+print([
+    "TotalSF",
+    "TotalBath",
+    "HouseAge",
+    "RemodAge",
+    "TotalPorchSF",
+    "HasGarage",
+    "HasBasement",
+    "HasPool"
+])
+
+print("\nUpdated dataset shape:", X.shape)
+
+
+# ============================================================
+# TRAIN-TEST SPLIT
+# ============================================================
+
+# Split before learning imputation, outlier limits,
+# and scaling parameters to avoid data leakage.
+
+X_train, X_test, y_train, y_test = train_test_split(
+    X,
+    y,
+    test_size=0.20,
+    random_state=42
 )
 
-# ---------------------------------------------------------------------
-# 9. EVALUATION (5.1)
-# ---------------------------------------------------------------------
-def evaluate(model, X_, y_log_, name="Model"):
-    y_pred_log = model.predict(X_, verbose=0).ravel()
-    y_pred = np.expm1(y_pred_log)          # back to original price
-    y_true = np.expm1(y_log_)
-    r2   = r2_score(y_true, y_pred)
-    mae  = mean_absolute_error(y_true, y_pred)
-    mse  = mean_squared_error(y_true, y_pred)
-    rmse = np.sqrt(mse)
-    print(f"\n--- {name} ---")
-    print(f"R²   : {r2:.4f}")
-    print(f"MAE  : {mae:,.2f}")
-    print(f"MSE  : {mse:,.2f}")
-    print(f"RMSE : {rmse:,.2f}")
-    return {"model": name, "R2": r2, "MAE": mae, "MSE": mse, "RMSE": rmse}
+print("\nTraining samples:", X_train.shape[0])
+print("Testing samples:", X_test.shape[0])
 
-results = [evaluate(dnn, X_val, y_val, "TensorFlow DNN")]
 
-# Optional: train MLP for comparison
-mlp = build_mlp_model(X_tr.shape[1])
-mlp.fit(
-    X_tr, y_tr,
-    validation_data=(X_val, y_val),
-    epochs=200, batch_size=64,
-    callbacks=callbacks, verbose=0,
+# ============================================================
+# STEP 5: OUTLIER TREATMENT
+# ============================================================
+
+print("\n========== OUTLIER TREATMENT ==========")
+
+# Select numerical columns
+numeric_columns = X_train.select_dtypes(
+    include=np.number
+).columns
+
+# Calculate lower and upper limits using training data only
+lower_limits = X_train[numeric_columns].quantile(0.01)
+upper_limits = X_train[numeric_columns].quantile(0.99)
+
+# Apply the same limits to train and test datasets
+X_train[numeric_columns] = X_train[numeric_columns].clip(
+    lower=lower_limits,
+    upper=upper_limits,
+    axis=1
 )
-results.append(evaluate(mlp, X_val, y_val, "TensorFlow MLP"))
 
-# K-Fold cross-validation option (for model stability)
-kf = KFold(n_splits=5, shuffle=True, random_state=42)
-cv_r2 = []
-for train_idx, val_idx in kf.split(X_prep):
-    m = build_dnn_model(X_prep.shape[1])
-    m.fit(
-        X_prep[train_idx], y_log.values[train_idx],
-        epochs=100, batch_size=64, verbose=0,
+X_test[numeric_columns] = X_test[numeric_columns].clip(
+    lower=lower_limits,
+    upper=upper_limits,
+    axis=1
+)
+
+print("Outlier treatment completed using 1st and 99th percentiles.")
+
+
+# ============================================================
+# STEP 6: SCALING OF FEATURES
+# ============================================================
+
+print("\n========== FEATURE SCALING ==========")
+
+# Identify numerical and categorical features
+numeric_features = X_train.select_dtypes(
+    include=np.number
+).columns.tolist()
+
+categorical_features = X_train.select_dtypes(
+    exclude=np.number
+).columns.tolist()
+
+# Numerical preprocessing
+numeric_transformer = Pipeline(steps=[
+    ("imputer", SimpleImputer(strategy="median")),
+    ("scaler", StandardScaler())
+])
+
+# Categorical preprocessing
+categorical_transformer = Pipeline(steps=[
+    ("imputer", SimpleImputer(
+        strategy="constant",
+        fill_value="Missing"
+    )),
+    ("encoder", OneHotEncoder(handle_unknown="ignore"))
+])
+
+# Combine preprocessing
+preprocessor = ColumnTransformer(
+    transformers=[
+        ("num", numeric_transformer, numeric_features),
+        ("cat", categorical_transformer, categorical_features)
+    ]
+)
+
+print("Numerical features:", len(numeric_features))
+print("Categorical features:", len(categorical_features))
+
+
+# ============================================================
+# STEP 7: BUILD & TRAIN MACHINE LEARNING MODELS
+# ============================================================
+
+print("\n========== MODEL TRAINING ==========")
+
+# Define five machine learning regression algorithms
+models = {
+
+    "Linear Regression": LinearRegression(),
+
+    "Decision Tree": DecisionTreeRegressor(
+        max_depth=10,
+        min_samples_split=5,
+        random_state=42
+    ),
+
+    "Random Forest": RandomForestRegressor(
+        n_estimators=200,
+        max_depth=None,
+        min_samples_split=2,
+        random_state=42,
+        n_jobs=-1
+    ),
+
+    "Gradient Boosting": GradientBoostingRegressor(
+        n_estimators=200,
+        learning_rate=0.05,
+        max_depth=3,
+        random_state=42
+    ),
+
+    "Support Vector Regression": SVR(
+        kernel="rbf",
+        C=100,
+        epsilon=0.1,
+        gamma="scale"
     )
-    preds = np.expm1(m.predict(X_prep[val_idx], verbose=0).ravel())
-    cv_r2.append(r2_score(np.expm1(y_log.values[val_idx]), preds))
-print(f"\n5-Fold CV R² (DNN): {np.mean(cv_r2):.4f} ± {np.std(cv_r2):.4f}")
+}
 
-# ---------------------------------------------------------------------
-# 10. TRAINING CURVES
-# ---------------------------------------------------------------------
-plt.figure(figsize=(10, 4))
-plt.plot(history.history["loss"], label="Train loss")
-plt.plot(history.history["val_loss"], label="Val loss")
-plt.xlabel("Epoch"); plt.ylabel("MSE (log target)")
-plt.title("Training vs Validation Loss")
-plt.legend(); plt.tight_layout(); plt.show()
+# Store evaluation results
+results = []
 
-# ---------------------------------------------------------------------
-# 11. FINAL PREDICTION ON UNSEEN TEST SET + SAVE
-# ---------------------------------------------------------------------
-test_pred_log = dnn.predict(test_prep, verbose=0).ravel()
-test_pred = np.expm1(test_pred_log)
+# Store trained models
+trained_models = {}
 
-submission = pd.DataFrame({
-    "Id": test_ids,
-    "SalePrice": test_pred,
+for name, algorithm in models.items():
+
+    print(f"\nTraining {name}...")
+
+    # Create complete machine learning pipeline
+    pipeline = Pipeline(steps=[
+        ("preprocessor", preprocessor),
+        ("model", algorithm)
+    ])
+
+    # Apply log transformation to target during training
+    # and convert predictions back to original house prices
+    model = TransformedTargetRegressor(
+        regressor=pipeline,
+        func=np.log1p,
+        inverse_func=np.expm1
+    )
+
+    # Train model
+    model.fit(X_train, y_train)
+
+    # Predict house prices
+    predictions = model.predict(X_test)
+
+    # Store trained model
+    trained_models[name] = model
+
+    # Calculate evaluation metrics
+    mae = mean_absolute_error(y_test, predictions)
+
+    mse = mean_squared_error(y_test, predictions)
+
+    rmse = np.sqrt(mse)
+
+    r2 = r2_score(y_test, predictions)
+
+    # Store results
+    results.append({
+        "Model": name,
+        "MAE": mae,
+        "MSE": mse,
+        "RMSE": rmse,
+        "R2 Score": r2
+    })
+
+    print(f"{name} training completed.")
+    print(f"MAE:  {mae:.2f}")
+    print(f"RMSE: {rmse:.2f}")
+    print(f"R2:   {r2:.4f}")
+
+
+# ============================================================
+# STEP 8: EVALUATE & COMPARE MODELS
+# ============================================================
+
+print("\n========== MODEL COMPARISON ==========")
+
+# Convert results into DataFrame
+comparison = pd.DataFrame(results)
+
+# Sort by RMSE (lowest is best)
+comparison = comparison.sort_values(
+    by="RMSE",
+    ascending=True
+)
+
+print("\nFinal Model Comparison:")
+print(comparison.to_string(index=False))
+
+# Identify best model
+best_model_name = comparison.iloc[0]["Model"]
+
+best_model = trained_models[best_model_name]
+
+print("\nBest Model:", best_model_name)
+
+
+# ============================================================
+# VISUALIZATION 1: MODEL RMSE COMPARISON
+# ============================================================
+
+plt.figure(figsize=(10, 6))
+
+sns.barplot(
+    data=comparison,
+    x="Model",
+    y="RMSE"
+)
+
+plt.title("RMSE Comparison of Regression Models")
+plt.xlabel("Machine Learning Models")
+plt.ylabel("RMSE")
+plt.xticks(rotation=25)
+plt.tight_layout()
+plt.show()
+
+
+# ============================================================
+# VISUALIZATION 2: MODEL R2 SCORE COMPARISON
+# ============================================================
+
+plt.figure(figsize=(10, 6))
+
+sns.barplot(
+    data=comparison,
+    x="Model",
+    y="R2 Score"
+)
+
+plt.title("R2 Score Comparison")
+plt.xlabel("Machine Learning Models")
+plt.ylabel("R2 Score")
+plt.xticks(rotation=25)
+plt.tight_layout()
+plt.show()
+
+
+# ============================================================
+# VISUALIZATION 3: ACTUAL VS PREDICTED HOUSE PRICES
+# ============================================================
+
+best_predictions = best_model.predict(X_test)
+
+plt.figure(figsize=(8, 6))
+
+plt.scatter(
+    y_test,
+    best_predictions,
+    alpha=0.6
+)
+
+plt.xlabel("Actual House Price")
+plt.ylabel("Predicted House Price")
+
+plt.title(f"Actual vs Predicted: {best_model_name}")
+
+min_value = min(y_test.min(), best_predictions.min())
+max_value = max(y_test.max(), best_predictions.max())
+
+plt.plot(
+    [min_value, max_value],
+    [min_value, max_value],
+    "r--"
+)
+
+plt.tight_layout()
+plt.show()
+
+
+# ============================================================
+# FINAL RESULT
+# ============================================================
+
+print("\n========== FINAL RESULT ==========")
+
+print("Best Model:", best_model_name)
+
+print("Best RMSE:",
+      comparison.iloc[0]["RMSE"])
+
+print("Best MAE:",
+      comparison.iloc[0]["MAE"])
+
+print("Best R2 Score:",
+      comparison.iloc[0]["R2 Score"])
+
+# Display sample predictions
+prediction_table = pd.DataFrame({
+    "Actual Price": y_test.iloc[:10].values,
+    "Predicted Price": best_predictions[:10]
 })
-submission.to_csv("submission_tensorflow.csv", index=False)
-print("\n✅ Saved predictions to submission_tensorflow.csv")
 
-# Save model
-dnn.save("house_price_dnn.keras")
-print("✅ Model saved to house_price_dnn.keras")
+print("\nSample Predictions:")
+print(prediction_table)
